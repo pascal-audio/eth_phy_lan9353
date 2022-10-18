@@ -1,0 +1,26 @@
+menu "LAN9353 Configuration"
+    config LAN9353_I2C_PORT
+        int "LAN9353 I2C Interface Number"
+        range 0 1
+        default 0
+        help
+            The I2C port used to communicate with the LAN9353
+
+        config LAN9353_I2C_ADDRESS
+            hex "LAN9353 I2C Address"
+            default 0x0A
+            help
+                The I2C port used to communicate with the LAN9353            
+            
+    choice LAN9353_MGMT
+        prompt "Ethernet PHY Device"
+        default LAN9353_MGMT_I2C
+        help
+            Select the Management Interface for LAN9353
+
+        config LAN9353_MGMT_I2C
+            bool "I2C"
+            help
+                LAN9353 Managed via I2C
+    endchoice # LAN9353_MGMT         
+endmenu
