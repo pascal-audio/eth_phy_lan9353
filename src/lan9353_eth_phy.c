@@ -101,15 +101,32 @@ typedef union
 {
     struct
     {
-        uint32_t reserved_1 : 2; /* Reserved */
-        uint32_t speed_ind : 3;  /* Speed Indication */
-        uint32_t reserved_2 : 7; /* Reserved */
-        uint32_t auto_done : 1;  /* Autodone */
-        uint32_t reserved_3 : 3; /* Reserved */
+        uint32_t sqeoff : 1;                /* Signal Quality Error */
+        uint32_t reserved_1 : 1;            /* Reserved */
+        uint32_t current_speed : 3;         /* Current Speed/Duplex Indication */
+        uint32_t clock_strength : 1;        /* RMII Clock Strengh */
+        uint32_t clock_direction : 1;       /* RMII Clock Direction */
+        uint32_t switch_collosion_test : 1; /* Switch Collision Test */
+        uint32_t mode_10 : 2;               /* Mode[1:0] */
+        uint32_t turbo : 1;                 /* Turbo Mode Enable */
+        uint32_t reserved_2 : 3;            /* Reserved */
+        uint32_t loopback : 1;              /* Switch Loopback */
+        uint32_t mode_2 : 1;                /* Mode[2] */
     };
     uint32_t val;
 } pscsr_reg_t;
-#define ETH_PHY_SCSR_REG_ADDR (0x1F)
+#define LAN9353_PSCSR (0x1F)
+
+typedef union
+{
+    struct
+    {
+        uint32_t revision : 16; /* Chip Revision */
+        uint32_t id : 16;       /* Chip Id */
+    };
+    uint32_t val;
+} chipid_reg_t;
+#define LAN9353_CHIPID_REG (0x050)
 
 typedef union
 {
@@ -136,22 +153,53 @@ typedef struct
     int reset_gpio_num;
 } phy_lan9353_t;
 
+static bool _lan9353_has_link(esp_eth_phy_t *phy, uint8_t port)
+{
+    pscsr_reg_t reg;
+
+    // Check port number
+    if (port >= 1 && port <= 2)
+    {
+        // Read PHY special control/status register
+        PHY_CHECK(lan9353_read_phy_reg(phy, port, LAN9353_PSCSR, &reg.val) == ESP_OK, "Error reading PSCSR", false);
+
+        // Check current operation mode
+        switch (reg.current_speed)
+        {
+        case 1: // 10Base-T half-duplex
+        case 2: // 100Base-TX half-duplex
+        case 5: // 10Base-T full-duplex
+        case 6: // 100Base-TX full-duplex
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    ESP_LOGE(TAG, "Invalid Port");
+    return false;
+}
+
 static esp_err_t lan9353_update_link_duplex_speed(esp_eth_phy_t *phy)
 {
-    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
-
     ESP_LOGD(TAG, "lan9353_update_link_duplex_speed");
 
+    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
     esp_eth_mediator_t *eth = lan9353->eth;
     eth_speed_t speed = ETH_SPEED_100M;
     eth_duplex_t duplex = ETH_DUPLEX_FULL;
-    bmsr_reg_t bmsr;
-    pscsr_reg_t pscsr;
 
-    PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_BMSR_REG_ADDR, &(bmsr.val)) == ESP_OK, "read BMSR failed", ESP_FAIL);
-    eth_link_t link = ETH_LINK_UP;
+    eth_link_t link = ETH_LINK_DOWN;
 
-    //    ESP_LOGI(TAG, "0x01h - link=%d, BMSR: %04x", bmsr.link_status ? 1 : 0, bmsr.val);
+    // Loop through the ports
+    for (uint8_t port = 1; port <= 2; port++)
+    {
+        // Retrieve current link state
+        if (_lan9353_has_link(phy, port))
+        {
+            link = ETH_LINK_UP;
+        }
+    }
 
     /* check if link status changed */
     if (lan9353->link_status != link)
@@ -159,42 +207,10 @@ static esp_err_t lan9353_update_link_duplex_speed(esp_eth_phy_t *phy)
         /* when link up, read negotiation result */
         if (link == ETH_LINK_UP)
         {
-            PHY_CHECK(lan9353_read_phy_reg(phy, ETH_PHY_SCSR_REG_ADDR, 0, &pscsr.val) == ESP_OK, "read PSCSR failed", ESP_FAIL);
-
-            PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_SCSR_REG_ADDR, &(pscsr.val)) == ESP_OK, "read PSCSR failed", ESP_FAIL);
-
-            ESP_LOGI(TAG, "0x1Fh (PSCSR)=%04x", pscsr.val);
-            ESP_LOGI(TAG, "speed=%02x", pscsr.speed_ind);
-            switch (pscsr.speed_ind)
-            {
-            case 1: // 10Base-T half-duplex
-                ESP_LOGI(TAG, "10M HalfDuplex");
-
-                speed = ETH_SPEED_10M;
-                duplex = ETH_DUPLEX_HALF;
-                break;
-            case 2: // 100Base-TX half-duplex
-                ESP_LOGI(TAG, "100M HalfDuplex");
-                speed = ETH_SPEED_100M;
-                duplex = ETH_DUPLEX_HALF;
-                break;
-            case 5: // 10Base-T full-duplex
-                ESP_LOGI(TAG, "10M FullDuplex");
-                speed = ETH_SPEED_10M;
-                duplex = ETH_DUPLEX_FULL;
-                break;
-            case 6: // 100Base-TX full-duplex
-                ESP_LOGI(TAG, "100M FullDuplex");
-                speed = ETH_SPEED_100M;
-                duplex = ETH_DUPLEX_FULL;
-                break;
-            default:
-                ESP_LOGI(TAG, "UNKNOWN LINK SPEED");
-                break;
-            }
             PHY_CHECK(eth->on_state_changed(eth, ETH_STATE_SPEED, (void *)speed) == ESP_OK, "change speed failed", ESP_FAIL);
             PHY_CHECK(eth->on_state_changed(eth, ETH_STATE_DUPLEX, (void *)duplex) == ESP_OK, "change duplex failed", ESP_FAIL);
         }
+
         PHY_CHECK(eth->on_state_changed(eth, ETH_STATE_LINK, (void *)link) == ESP_OK, "change link failed", ESP_FAIL);
         lan9353->link_status = link;
     }
@@ -220,33 +236,47 @@ static esp_err_t lan9353_get_link(esp_eth_phy_t *phy)
 
 static esp_err_t lan9353_reset(esp_eth_phy_t *phy)
 {
+    ESP_LOGD(TAG, "lan9353_reset");
+
     phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
     lan9353->link_status = ETH_LINK_DOWN;
-    esp_eth_mediator_t *eth = lan9353->eth;
+
     bmcr_reg_t bmcr = {.reset = 1};
-    PHY_CHECK(eth->phy_reg_write(eth, lan9353->addr, ETH_PHY_BMCR_REG_ADDR, bmcr.val) == ESP_OK, "write BMCR failed", ESP_FAIL);
+    PHY_CHECK(lan9353_write_phy_reg(phy, 0, ETH_PHY_BMCR_REG_ADDR, bmcr.val) == ESP_OK, "write BMCR failed", ESP_FAIL);
     vTaskDelay(pdMS_TO_TICKS(50));
 
     /* wait for reset complete */
-    uint32_t to = 0;
+    bool reset_complete = false;
+    uint32_t to;
     for (to = 0; to < lan9353->reset_timeout_ms / 10; to++)
     {
         vTaskDelay(pdMS_TO_TICKS(10));
-        ESP_LOGI(TAG, "read BMCR");
-        PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_BMCR_REG_ADDR, &(bmcr.val)) == ESP_OK, "read BMCR failed", ESP_FAIL);
-        ESP_LOGI(TAG, "BMCR=%08X", bmcr.val);
-        if (!bmcr.reset)
+
+        uint32_t value;
+        PHY_CHECK(lan9353_read_device_reg(phy, REG_BYTE_TEST, &value, 1) == ESP_OK, "read BOT failed", ESP_FAIL);
+
+        if (value != LAN9353_BYTE_TEST_DEFAULT)
         {
+            continue;
+        }
+
+        // Read HW_CFG register
+        PHY_CHECK(lan9353_read_device_reg(phy, LAN9353_HW_CFG, &value, 1) == ESP_OK, "read HWCFG failed", ESP_FAIL);
+
+        if ((value & LAN9353_HW_CFG_DEVICE_READY) != 0)
+        {
+            reset_complete = true;
             break;
         }
     }
-    PHY_CHECK(to < lan9353->reset_timeout_ms / 10, "reset timeout", ESP_FAIL);
+
+    PHY_CHECK(reset_complete, "reset timeout", ESP_FAIL);
     return ESP_OK;
 }
 
 static esp_err_t lan9353_reset_hw(esp_eth_phy_t *phy)
 {
-    ESP_LOGI(TAG, "lan9353_reset_hw");
+    ESP_LOGD(TAG, "lan9353_reset_hw");
 
     phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
     if (lan9353->reset_gpio_num >= 0)
@@ -254,67 +284,41 @@ static esp_err_t lan9353_reset_hw(esp_eth_phy_t *phy)
         gpio_pad_select_gpio(lan9353->reset_gpio_num);
         gpio_set_direction(lan9353->reset_gpio_num, GPIO_MODE_OUTPUT);
         gpio_set_level(lan9353->reset_gpio_num, 0);
-        ets_delay_us(1000000); // insert min input assert time
+        ets_delay_us(200); // insert min input assert time
         gpio_set_level(lan9353->reset_gpio_num, 1);
     }
-
-    ESP_LOGI(TAG, "lan9353_reset_hw.done");
 
     return ESP_OK;
 }
 
 static esp_err_t lan9353_negotiate(esp_eth_phy_t *phy)
 {
-    ESP_LOGI(TAG, "lan9353_negotiate");
+    ESP_LOGD(TAG, "lan9353_negotiate");
 
     phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
-    esp_eth_mediator_t *eth = lan9353->eth;
     /* in case any link status has changed, let's assume we're in link down status */
     lan9353->link_status = ETH_LINK_DOWN;
-    /* Restart auto negotiation */
 
+    /* Disable auto negotiation - and set network speed */
     bmcr_reg_t bmcr = {
         .speed_select = 1,     /* 100Mbps */
         .duplex_mode = 1,      /* Full Duplex */
-        .en_auto_nego = 1,     /* Auto Negotiation */
-        .restart_auto_nego = 1 /* Restart Auto Negotiation */
+        .en_auto_nego = 0,     /* Auto Negotiation */
+        .restart_auto_nego = 0 /* Restart Auto Negotiation */
     };
-    PHY_CHECK(eth->phy_reg_write(eth, lan9353->addr, ETH_PHY_BMCR_REG_ADDR, bmcr.val) == ESP_OK, "write BMCR failed", ESP_FAIL);
-
-#define AUTONEG
-#ifdef AUTONEG
-    /* Wait for auto negotiation complete */
-    bmsr_reg_t bmsr;
-    int32_t to = 0;
-    for (to = 0; to < lan9353->autonego_timeout_ms / 100; to++)
-    {
-        vTaskDelay(pdMS_TO_TICKS(100));
-        PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_BMSR_REG_ADDR, &(bmsr.val)) == ESP_OK, "read BMSR failed", ESP_FAIL);
-        if (bmsr.auto_nego_complete)
-        {
-            break;
-        }
-    }
-    /* Auto negotiation failed, maybe no network cable plugged in, so output a warning */
-    if (to >= lan9353->autonego_timeout_ms / 100)
-    {
-        ESP_LOGW(TAG, "auto negotiation timeout");
-    }
-#endif
+    PHY_CHECK(lan9353_write_phy_reg(phy, 0, ETH_PHY_BMCR_REG_ADDR, bmcr.val) == ESP_OK, "write BMCR failed", ESP_FAIL);
 
     return ESP_OK;
 }
 
 static esp_err_t lan9353_pwrctl(esp_eth_phy_t *phy, bool enable)
 {
-    ESP_LOGI(TAG, "lan9353_pwrctl, enable=%d", enable ? 1 : 0);
+    ESP_LOGD(TAG, "lan9353_pwrctl, enable=%d", enable ? 1 : 0);
 
-    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
-    esp_eth_mediator_t *eth = lan9353->eth;
-
+#ifdef LAN9353_POWER_MANAGEMENT
     // Set Power Down Mode
     bmcr_reg_t bmcr;
-    PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_BMCR_REG_ADDR, &(bmcr.val)) == ESP_OK, "read BMCR failed", ESP_FAIL);
+    PHY_CHECK(lan9353_read_phy_reg(phy, 0, ETH_PHY_BMCR_REG_ADDR, &(bmcr.val)) == ESP_OK, "read BMCR failed", ESP_FAIL);
     if (!enable)
     {
         /* General Power Down Mode */
@@ -325,8 +329,9 @@ static esp_err_t lan9353_pwrctl(esp_eth_phy_t *phy, bool enable)
         /* Normal operation Mode */
         bmcr.power_down = 0;
     }
-    PHY_CHECK(eth->phy_reg_write(eth, lan9353->addr, ETH_PHY_BMCR_REG_ADDR, bmcr.val) == ESP_OK, "write BMCR failed", ESP_FAIL);
-    PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_BMCR_REG_ADDR, &(bmcr.val)) == ESP_OK, "read BMCR failed", ESP_FAIL);
+    PHY_CHECK(lan9353_write_phy_reg(phy, 0, ETH_PHY_BMCR_REG_ADDR, bmcr.val) == ESP_OK, "write BMCR failed", ESP_FAIL);
+    PHY_CHECK(lan9353_read_phy_reg(phy, 0, ETH_PHY_BMCR_REG_ADDR, &(bmcr.val)) == ESP_OK, "read BMCR failed", ESP_FAIL);
+
     if (!enable)
     {
         PHY_CHECK(bmcr.power_down == 1, "power down failed", ESP_FAIL);
@@ -335,12 +340,14 @@ static esp_err_t lan9353_pwrctl(esp_eth_phy_t *phy, bool enable)
     {
         PHY_CHECK(bmcr.power_down == 0, "power up failed", ESP_FAIL);
     }
+#endif
+
     return ESP_OK;
 }
 
 static esp_err_t lan9353_set_addr(esp_eth_phy_t *phy, uint32_t addr)
 {
-    ESP_LOGI(TAG, "lan9353_set_addr");
+    ESP_LOGD(TAG, "lan9353_set_addr");
 
     phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
     lan9353->addr = addr;
@@ -352,6 +359,7 @@ static esp_err_t lan9353_get_addr(esp_eth_phy_t *phy, uint32_t *addr)
     PHY_CHECK(addr, "addr can't be null", ESP_ERR_INVALID_ARG);
     phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
     *addr = lan9353->addr;
+
     return ESP_OK;
 }
 
@@ -362,154 +370,45 @@ static esp_err_t lan9353_del(esp_eth_phy_t *phy)
     return ESP_OK;
 }
 
-static esp_err_t lan9353_init_2(esp_eth_phy_t *phy)
-{
-    uint32_t value;
-    esp_err_t res;
-
-    // Debug message
-    ESP_LOGI(TAG, "Initializing LAN9353...");
-
-    // Chip-level reset/configuration completion can be determined by first
-    // polling the BYTE_TEST register
-
-    ESP_LOGI(TAG, "Init:1");
-
-    do
-    {
-        // Read BYTE_TEST register
-        res = lan9353_read_device_reg(phy, REG_BYTE_TEST, &value, 1);
-        ESP_LOGI(TAG, "BOT=%08x, res=%d (%s)", value, res, esp_err_to_name(res));
-
-        if (res != ESP_OK)
-        {
-            continue;
-        }
-
-        // The returned data is invalid until the serial interface reset is
-        // complete
-    } while (value != LAN9353_BYTE_TEST_DEFAULT);
-
-    ESP_LOGI(TAG, "Init:2");
-
-    // The completion of the entire chip-level reset must then be determined
-    // by polling the READY bit of the HW_CFG register
-    do
-    {
-        // Read HW_CFG register
-        res = lan9353_read_device_reg(phy, LAN9353_HW_CFG, &value, 1);
-
-        if (res != ESP_OK)
-        {
-            continue;
-        }
-
-        // When set, the READY bit indicates that the reset has completed and
-        // the device is ready to be accessed
-    } while ((value & LAN9353_HW_CFG_DEVICE_READY) == 0);
-
-    // ESP_LOGI(TAG, "Init:3");
-
-    // // Disable special VLAN tagging mode
-    // value = 0;
-    // PHY_CHECK(lan9353_write_switch_reg(LAN9353_SWE_INGRSS_PORT_TYP, value) == ESP_OK, "write failed", err);
-
-    // // Revert to default configuration
-    // value = 0;
-    // PHY_CHECK(lan9353_write_switch_reg(LAN9353_BM_EGRSS_PORT_TYPE, value) == ESP_OK, "write failed", err);
-
-    // // Disable port mirroring
-    // value = 0;
-    // PHY_CHECK(lan9353_write_switch_reg(LAN9353_SWE_PORT_MIRROR, value) == ESP_OK, "write failed", err);
-
-    // return ESP_OK;
-
-    // // Configure port state
-    // value = LAN9353_SWE_PORT_STATE_PORT2_FORWARDING |
-    //         LAN9353_SWE_PORT_STATE_PORT1_FORWARDING |
-    //         LAN9353_SWE_PORT_STATE_PORT0_FORWARDING;
-    // PHY_CHECK(lan9353_write_switch_reg(LAN9353_SWE_PORT_STATE, value) == ESP_OK, "write failed", err);
-
-    //    lan9353_write_phy_reg(0, 0, 0x2100);
-
-    return ESP_OK;
-
-//#define COMPLEX
-#ifdef COMPLEX
-
-    lan9353_write_phy_reg(1, 16, 0x0001);
-    lan9353_write_phy_reg(2, 16, 0x0001);
-
-    uint32_t reg, value1, value2;
-    reg = 16;
-    res = lan9353_read_phy_reg(1, reg, &value1);
-    res = lan9353_read_phy_reg(2, reg, &value2);
-    ESP_LOGI(TAG, "PHY_EDPD_CFG_x=                  [ %04x, %04x ]", value1, value2);
-
-    lan9353_write_phy_reg(1, 27, 0xC000);
-    lan9353_write_phy_reg(2, 27, 0xC000);
-
-    lan9353_write_phy_reg(1, 0, 0x8000);
-    lan9353_write_phy_reg(2, 0, 0x8000);
-
-    // usleep(10000);
-
-    lan9353_read_phy_reg(1, 0, 0x3100);
-    lan9353_write_phy_reg(2, 0, 0x3100);
-
-    // usleep(10000);
-
-    res = lan9353_read_phy_reg(1, 27, &value);
-    ESP_LOGI(TAG, "PHY_SPECIAL_CONTROL_STAT_IND_1=%08x, res=%d (%s)", value, res, esp_err_to_name(res));
-
-    res = lan9353_read_phy_reg(2, 27, &value);
-    ESP_LOGI(TAG, "PHY_SPECIAL_CONTROL_STAT_IND_2=%08x, res=%d (%s)", value, res, esp_err_to_name(res));
-
-    // // Configure port 0 receive parameters
-    // value = LAN9353_MAC_RX_CFG_REJECT_MAC_TYPES | LAN9353_MAC_RX_CFG_RX_EN;
-    // ESP_RETURN_ON_ERROR(lan9353_write_switch_reg(LAN9353_MAC_RX_CFG(0), value), TAG, "write failed");
-
-    // // Configure port 0 transmit parameters
-    // value = LAN9353_MAC_TX_CFG_IFG_CONFIG_DEFAULT |
-    //         LAN9353_MAC_TX_CFG_TX_PAD_EN |
-    //         LAN9353_MAC_TX_CFG_TX_EN;
-    // ESP_RETURN_ON_ERROR(lan9353_write_switch_reg(LAN9353_MAC_TX_CFG(0), value), TAG, "write failed");
-    return ESP_OK;
-
-#endif
-    // err:
-    //     return ESP_FAIL;
-}
-
 static esp_err_t lan9353_init(esp_eth_phy_t *phy)
 {
-    // ESP_LOGI(TAG, "lan9353_init");
-
-    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
-    esp_eth_mediator_t *eth = lan9353->eth;
+    ESP_LOGD(TAG, "lan9353_init");
 
     /* Power on Ethernet PHY */
     PHY_CHECK(lan9353_pwrctl(phy, true) == ESP_OK, "power control failed", ESP_FAIL);
+
     /* Reset Ethernet PHY */
-
     PHY_CHECK(lan9353_reset(phy) == ESP_OK, "reset failed", ESP_FAIL);
+
     /* Check PHY ID */
-    phyidr1_reg_t id1;
-    phyidr2_reg_t id2;
-    PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_IDR1_REG_ADDR, &(id1.val)) == ESP_OK, "read ID1 failed", ESP_FAIL);
-    PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, ETH_PHY_IDR2_REG_ADDR, &(id2.val)) == ESP_OK, "read ID2 failed", ESP_FAIL);
+    chipid_reg_t chip_id;
+    PHY_CHECK(lan9353_read_device_reg(phy, LAN9353_CHIPID_REG, &(chip_id.val), 1) == ESP_OK, "read Chip ID failed", ESP_FAIL);
 
-    ESP_LOGI(TAG, "msb=%04x, lsb=%04x, vm=%04x", id1.oui_msb, id2.oui_lsb, id2.vendor_model);
-    // PHY_CHECK(id1.oui_msb == 0x22 && id2.oui_lsb == 0x5 && id2.vendor_model == 0x16, "wrong chip ID", err);
+    ESP_LOGD(TAG, "chip_id=%d, revision=%d", chip_id.id, chip_id.revision);
+    PHY_CHECK(chip_id.id == 0x9353, "wrong chip ID", ESP_FAIL);
 
-    lan9353_init_2(phy);
+    // Disable special VLAN tagging mode
+    uint32_t value = 0;
+    PHY_CHECK(lan9353_write_switch_reg(phy, LAN9353_SWE_INGRSS_PORT_TYP, value) == ESP_OK, "write failed", ESP_FAIL);
+
+    // Revert to default configuration
+    value = 0;
+    PHY_CHECK(lan9353_write_switch_reg(phy, LAN9353_BM_EGRSS_PORT_TYPE, value) == ESP_OK, "write failed", ESP_FAIL);
+
+    // Disable port mirroring
+    value = 0;
+    PHY_CHECK(lan9353_write_switch_reg(phy, LAN9353_SWE_PORT_MIRROR, value) == ESP_OK, "write failed", ESP_FAIL);
+
+    // Configure port state
+    value = LAN9353_SWE_PORT_STATE_PORT2_FORWARDING | LAN9353_SWE_PORT_STATE_PORT1_FORWARDING | LAN9353_SWE_PORT_STATE_PORT0_FORWARDING;
+    PHY_CHECK(lan9353_write_switch_reg(phy, LAN9353_SWE_PORT_STATE, value) == ESP_OK, "write failed", ESP_FAIL);
 
     return ESP_OK;
 }
 
 static esp_err_t lan9353_deinit(esp_eth_phy_t *phy)
 {
-    ESP_LOGI(TAG, "lan9353_deinit");
+    ESP_LOGD(TAG, "lan9353_deinit");
 
     /* Power off Ethernet PHY */
     PHY_CHECK(lan9353_pwrctl(phy, false) == ESP_OK, "power control failed", ESP_FAIL);
@@ -519,7 +418,7 @@ static esp_err_t lan9353_deinit(esp_eth_phy_t *phy)
 
 esp_eth_phy_t *esp_eth_phy_new_lan9353(const eth_phy_config_t *config)
 {
-    ESP_LOGI(TAG, "create");
+    ESP_LOGD(TAG, "lan9353_new");
 
     PHY_CHECK(config, "can't set phy config to null", NULL);
     phy_lan9353_t *lan9353 = calloc(1, sizeof(phy_lan9353_t));
@@ -542,26 +441,6 @@ esp_eth_phy_t *esp_eth_phy_new_lan9353(const eth_phy_config_t *config)
     lan9353->parent.del = lan9353_del;
 
     return &(lan9353->parent);
-}
-
-esp_err_t lan9353_dump(esp_eth_phy_t *phy)
-{
-    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
-    esp_eth_mediator_t *eth = lan9353->eth;
-
-    uint32_t regs[9] = {0x00, 0x01, 31};
-
-    for (int i = 0; i < 3; i++)
-    {
-        int32_t reg = regs[i];
-        uint32_t val;
-        // PHY_CHECK(eth->phy_reg_read(eth, addr, reg, &val) == ESP_OK,
-        //           "read failed", err);
-        PHY_CHECK(eth->phy_reg_read(eth, lan9353->addr, reg, &val) == ESP_OK, "read failed", ESP_FAIL);
-        ESP_LOGI(TAG, "reg 0x%02x=0x%04x", reg, val);
-    }
-
-    return ESP_OK;
 }
 
 static uint32_t _byteswap32(uint32_t x)
@@ -621,7 +500,45 @@ esp_err_t lan9353_write_device_reg(esp_eth_phy_t *phy, uint32_t reg, uint32_t *v
     return result;
 }
 
-esp_err_t lan9353_write_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t val)
+static esp_err_t _lan9353_get_vphy_addr(uint32_t addr, uint32_t index)
+{
+    assert(addr == 0);
+    uint16_t reg_base;
+
+    switch (index)
+    {
+    case 0:
+        reg_base = 0x0C0;
+        break;
+    case 1:
+        reg_base = 0x0C4;
+        break;
+    case 2:
+        reg_base = 0x0C8;
+        break;
+    case 3:
+        reg_base = 0x0CC;
+        break;
+    case 4:
+        reg_base = 0x0D0;
+        break;
+    case 5:
+        reg_base = 0x0D4;
+        break;
+    case 6:
+        reg_base = 0x0D8;
+        break;
+    case 31:
+        reg_base = 0x0DC;
+        break;
+    default:
+        assert(false);
+    }
+
+    return reg_base + ((addr == 0) ? 0x100 : 0x000);
+}
+
+static esp_err_t _lan9353_write_i2c_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t val)
 {
     pmi_access_reg_t pmi_access = {0};
     pmi_access.phy_address = addr;
@@ -636,9 +553,44 @@ esp_err_t lan9353_write_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t inde
     return ESP_OK;
 }
 
-esp_err_t lan9353_read_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t *val)
+static esp_err_t _lan9353_write_i2c_vphy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t val)
 {
+    pmi_access_reg_t pmi_access = {0};
+    pmi_access.phy_address = addr;
+    pmi_access.mii_register_index = index;
+    pmi_access.mii_write = 1;
 
+    PHY_CHECK(lan9353_write_device_reg(phy, REG_PMI_DATA, &val, 1) == ESP_OK, "write failed", ESP_FAIL);
+    // usleep(1000);
+    PHY_CHECK(lan9353_write_device_reg(phy, REG_PMI_ACCESS, &pmi_access.val, 1) == ESP_OK, "write failed", ESP_FAIL);
+    // usleep(1000);
+
+    return ESP_OK;
+}
+
+esp_err_t lan9353_write_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t val)
+{
+#ifdef CONFIG_LAN9353_MGMT_I2C
+    switch (addr)
+    {
+    case 0:
+        return _lan9353_write_i2c_vphy_reg(phy, addr, index, val);
+    case 1:
+    case 2:
+        return _lan9353_write_i2c_phy_reg(phy, addr, index, val);
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+#else
+    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
+    esp_eth_mediator_t *eth = lan9353->eth;
+
+    return eth->phy_write_reg(eth, lan9353->addr, index, val);
+#endif
+}
+
+static esp_err_t _lan9353_read_i2c_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t *val)
+{
     pmi_access_reg_t pmi_access = {0};
     pmi_access.phy_address = addr;
     pmi_access.mii_register_index = index;
@@ -649,6 +601,34 @@ esp_err_t lan9353_read_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index
     ets_delay_us(100);
 
     return ESP_OK;
+}
+
+static esp_err_t _lan9353_read_i2c_vphy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t *val)
+{
+    uint16_t reg = _lan9353_get_vphy_addr(addr, index);
+
+    return lan9353_read_device_reg(phy, reg, val, 1);
+}
+
+esp_err_t lan9353_read_phy_reg(esp_eth_phy_t *phy, uint32_t addr, uint32_t index, uint32_t *val)
+{
+#ifdef CONFIG_LAN9353_MGMT_I2C
+    switch (addr)
+    {
+    case 0:
+        return _lan9353_read_i2c_vphy_reg(phy, addr, index, val);
+    case 1:
+    case 2:
+        return _lan9353_read_i2c_phy_reg(phy, addr, index, val);
+    default:
+        return ESP_ERR_INVALID_ARG;
+    }
+#else
+    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
+    esp_eth_mediator_t *eth = lan9353->eth;
+
+    return lan9353_read_phy_reg(phy, 0, index, val);
+#endif
 }
 
 /**
