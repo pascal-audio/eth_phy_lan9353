@@ -151,9 +151,10 @@ typedef struct
     uint32_t autonego_timeout_ms;
     eth_link_t link_status;
     int reset_gpio_num;
+    bool link[2];
 } phy_lan9353_t;
 
-static bool _lan9353_has_link(esp_eth_phy_t *phy, uint8_t port)
+static bool _lan9353_check_link(esp_eth_phy_t *phy, uint8_t port, bool *has_link)
 {
     pscsr_reg_t reg;
 
@@ -170,9 +171,11 @@ static bool _lan9353_has_link(esp_eth_phy_t *phy, uint8_t port)
         case 2: // 100Base-TX half-duplex
         case 5: // 10Base-T full-duplex
         case 6: // 100Base-TX full-duplex
+            *has_link = true;
             return true;
         default:
-            return false;
+            *has_link = false;
+            return true;
         }
     }
 
@@ -195,7 +198,12 @@ static esp_err_t lan9353_update_link_duplex_speed(esp_eth_phy_t *phy)
     for (uint8_t port = 1; port <= 2; port++)
     {
         // Retrieve current link state
-        if (_lan9353_has_link(phy, port))
+        if (!_lan9353_check_link(phy, port, &lan9353->link[port - 1]))
+        {
+            return ESP_FAIL;
+        }
+
+        if (lan9353->link[port - 1])
         {
             link = ETH_LINK_UP;
         }
@@ -692,4 +700,13 @@ esp_err_t lan9353_read_switch_reg(esp_eth_phy_t *phy, uint16_t address, uint32_t
 
     // Read data from the SWITCH_CSR_DATA register
     return lan9353_read_device_reg(phy, LAN9353_SWITCH_CSR_DATA, val, 1);
+}
+
+static bool lan9353_get_link_status(esp_eth_phy_t *phy, uint8_t port)
+{
+    ESP_LOGD(TAG, "lan9353_get_link_status");
+
+    phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
+
+    return lan9353->link[port];
 }
