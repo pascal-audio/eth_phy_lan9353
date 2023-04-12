@@ -31,7 +31,7 @@ extern "C"
 
     esp_err_t lan9353_dump(esp_eth_phy_t *phy);
 
-    static bool lan9353_get_link_status(esp_eth_phy_t *phy, uint8_t port);
+    bool lan9353_get_link_status(esp_eth_phy_t *phy, uint8_t port);
 
 #ifdef __cplusplus
 }

@@ -702,8 +702,10 @@ esp_err_t lan9353_read_switch_reg(esp_eth_phy_t *phy, uint16_t address, uint32_t
     return lan9353_read_device_reg(phy, LAN9353_SWITCH_CSR_DATA, val, 1);
 }
 
-static bool lan9353_get_link_status(esp_eth_phy_t *phy, uint8_t port)
+bool lan9353_get_link_status(esp_eth_phy_t *phy, uint8_t port)
 {
+    assert(port < 2);
+
     ESP_LOGD(TAG, "lan9353_get_link_status");
 
     phy_lan9353_t *lan9353 = __containerof(phy, phy_lan9353_t, parent);
