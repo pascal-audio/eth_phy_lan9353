@@ -154,6 +154,15 @@ typedef struct
     bool link[2];
 } phy_lan9353_t;
 
+void _platform_delay_us(uint32_t us)
+{
+    int64_t start = esp_timer_get_time();
+    while (esp_timer_get_time() - start < us)
+    {
+        // Busy Loop
+    }
+}
+
 static bool _lan9353_check_link(esp_eth_phy_t *phy, uint8_t port, bool *has_link)
 {
     pscsr_reg_t reg;
@@ -292,7 +301,7 @@ static esp_err_t lan9353_reset_hw(esp_eth_phy_t *phy)
         gpio_pad_select_gpio(lan9353->reset_gpio_num);
         gpio_set_direction(lan9353->reset_gpio_num, GPIO_MODE_OUTPUT);
         gpio_set_level(lan9353->reset_gpio_num, 0);
-        ets_delay_us(200); // insert min input assert time
+        _platform_delay_us(200); // insert min input assert time
         gpio_set_level(lan9353->reset_gpio_num, 1);
     }
 
@@ -604,9 +613,9 @@ static esp_err_t _lan9353_read_i2c_phy_reg(esp_eth_phy_t *phy, uint32_t addr, ui
     pmi_access.mii_register_index = index;
 
     PHY_CHECK(lan9353_write_device_reg(phy, REG_PMI_ACCESS, &pmi_access.val, 1) == ESP_OK, "write failed", ESP_FAIL);
-    ets_delay_us(100);
+    _platform_delay_us(100);
     PHY_CHECK(lan9353_read_device_reg(phy, REG_PMI_DATA, val, 1) == ESP_OK, "read failed", ESP_FAIL);
-    ets_delay_us(100);
+    _platform_delay_us(100);
 
     return ESP_OK;
 }
